@@ -11,9 +11,22 @@ import qualified Debug.Trace as Debug (trace)
 import Data.Word (Word8(..))
 import qualified Data.Vector.Storable as Vector.Storable
 import Protolude
+import qualified Options.Applicative as Options
+import qualified Data.Map as Map
+import Data.Map (Map(..))
+import qualified SDL.Image
 
+data CLIOptions = CLIOptions {
+   imagePath :: FilePath
+   } deriving (Show, Eq)
 
-data Kachel = Kachel1 | Kachel2 | Kachel3 deriving (Show, Eq)
+cliOptionsParser :: Options.Parser CLIOptions
+cliOptionsParser = CLIOptions <$> Options.strOption ( Options.long "image" <> Options.metavar "IMAGE" <> Options.help "image for the tile puzzle" )
+
+cliOptionsP :: Options.ParserInfo CLIOptions
+cliOptionsP =  Options.info (cliOptionsParser <**> Options.helper) (Options.fullDesc <> Options.progDesc "Solve a tile puzzle with an image you love!" <> Options.header "movetiles - Solve a tile puzzle!")
+
+data Kachel = Kachel1 | Kachel2 | Kachel3 deriving (Show, Eq, Ord)
 
 data Board = Board { leftUpper :: Maybe Kachel
                    , rightUpper :: Maybe Kachel
@@ -28,13 +41,21 @@ data BoardRectangles = BoardRectangles { leftUpperR :: Rectangle CInt
 data GameState = GameState { board :: Board
                            , boardRectangles :: Maybe BoardRectangles -- to determine which kachel was clicked
                            , selectedKachel :: Maybe Kachel
+                           , imageTexture :: SDL.Texture
+                           , imageTileMap :: Map Kachel (Rectangle CInt)
                            }
 
 initialBoard :: Board
 initialBoard = Board (Just Kachel1) (Just Kachel2) (Just Kachel3) Nothing
 
-initialGameState :: GameState
-initialGameState = GameState initialBoard Nothing (Just Kachel1)
+mkInitialGameState :: SDL.Texture -> [Rectangle (CInt)] -> GameState
+mkInitialGameState image imageTiles = GameState {
+    board = Board (Just Kachel1) (Just Kachel2) (Just Kachel3) Nothing
+  , boardRectangles = Nothing
+  , selectedKachel = Nothing
+  , imageTexture = image
+  , imageTileMap = Map.fromList . zip [Kachel1,Kachel2,Kachel3] $ imageTiles
+  }
 
 newtype Width = Width CInt deriving (Show)
 newtype Height = Height CInt deriving (Show)
@@ -56,13 +77,6 @@ colorForKachel :: Kachel -> V4 Word8
 colorForKachel Kachel1 = V4 0 255 0   255 
 colorForKachel Kachel2 = V4 0 0   255 255
 colorForKachel Kachel3 = V4 0 255 255 255 
-
-drawKachel :: Renderer -> Maybe Kachel -> Rectangle CInt -> IO ()
--- drawKachel _ mk r | Debug.trace ("drawKachel " ++ show mk ++ " " ++ show r) False = undefined
-drawKachel _ Nothing _ = return ()
-drawKachel renderer (Just kachel) r = do
-    rendererDrawColor renderer $= (colorForKachel kachel)
-    fillRect renderer (Just r)
 
 getRendererDimensions :: Renderer -> IO (Rectangle CInt)
 getRendererDimensions renderer = do
@@ -107,7 +121,7 @@ executeMotion b (Just m) (Just k) = case () of
 executeMotion b _ _ = b
 
 calculateNextGameState :: GameState -> Rectangle CInt -> Maybe (Point V2 Int32) -> Maybe Motion -> GameState
-calculateNextGameState gs@(GameState board _ selected) r buttonPress motion =
+calculateNextGameState gs@(GameState board _ selected _ _) r buttonPress motion =
   let actRects     = splitInRectangles r
       newSelection = case buttonPress of
         Nothing    -> selected
@@ -126,9 +140,9 @@ calculateNextGameState gs@(GameState board _ selected) r buttonPress motion =
   in gs { board = executeMotion board motion newSelection, boardRectangles = Just actRects, selectedKachel = newSelection }
 
 getRectangleForSelectedKachel :: GameState -> Maybe (Rectangle CInt)
-getRectangleForSelectedKachel (GameState _ _ Nothing) = Nothing
-getRectangleForSelectedKachel (GameState _ Nothing _) = Nothing
-getRectangleForSelectedKachel (GameState b (Just rs) k) = case () of
+getRectangleForSelectedKachel (GameState _ _ Nothing _ _) = Nothing
+getRectangleForSelectedKachel (GameState _ Nothing _ _ _) = Nothing
+getRectangleForSelectedKachel (GameState b (Just rs) k _ _) = case () of
   _ | leftUpper b == k   -> Just $ leftUpperR rs
   _ | leftBottom b == k  -> Just $ leftBottomR rs
   _ | rightBottom b == k -> Just $ rightBottomR rs
@@ -136,21 +150,27 @@ getRectangleForSelectedKachel (GameState b (Just rs) k) = case () of
   _ -> Nothing
 
 drawGameState :: Renderer -> GameState -> IO ()
-drawGameState _ (GameState _ Nothing _) = return () -- without Rectangles, we can't draw anything.
-drawGameState renderer gs@(GameState board (Just boardRectangles) selectedKachel) = do
-    drawBoard renderer board boardRectangles
+drawGameState _ (GameState _ Nothing _ _ _) = return () -- without Rectangles, we can't draw anything.
+drawGameState renderer gs@(GameState board (Just boardRectangles) selectedKachel image imageTiles) = do
+    drawBoard renderer board boardRectangles image imageTiles
     case getRectangleForSelectedKachel gs of
       Nothing  -> return ()
       (Just r) -> drawSelectionFrame renderer r
 
-drawBoard :: Renderer -> Board -> BoardRectangles -> IO ()
-drawBoard renderer board rectAngles = do
+drawBoard :: Renderer -> Board -> BoardRectangles -> SDL.Texture -> Map Kachel (Rectangle CInt) -> IO ()
+drawBoard renderer board rectAngles image imageTiles = do
   rendererDrawColor renderer $= V4 100 100 100 255
   clear renderer
-  drawKachel renderer (leftUpper   board) (leftUpperR   rectAngles)
-  drawKachel renderer (rightUpper  board) (rightUpperR  rectAngles)
-  drawKachel renderer (leftBottom  board) (leftBottomR  rectAngles)
-  drawKachel renderer (rightBottom board) (rightBottomR rectAngles)
+  drawKachel renderer (leftUpper   board) (leftUpperR   rectAngles) image imageTiles
+  drawKachel renderer (rightUpper  board) (rightUpperR  rectAngles) image imageTiles
+  drawKachel renderer (leftBottom  board) (leftBottomR  rectAngles) image imageTiles
+  drawKachel renderer (rightBottom board) (rightBottomR rectAngles) image imageTiles
+
+drawKachel :: Renderer -> Maybe Kachel -> Rectangle CInt -> SDL.Texture -> Map Kachel (Rectangle CInt) -> IO ()
+-- drawKachel _ mk r | Debug.trace ("drawKachel " ++ show mk ++ " " ++ show r) False = undefined
+drawKachel _ Nothing _ _ _ = return ()
+drawKachel renderer (Just kachel) r image imageTiles = do
+    copy renderer image (Just $ imageTiles Map.! kachel) (Just r)
 
 calculateSelectionRects :: Rectangle CInt -> [Rectangle CInt]
 calculateSelectionRects (Rectangle (P (V2 offx offy)) (V2 width height)) =
@@ -167,12 +187,30 @@ drawSelectionFrame renderer r = do
     rendererDrawColor renderer $= V4 255 0 0 255
     fillRects renderer (Vector.Storable.fromList (calculateSelectionRects r))
 
+turnToGrid :: V2 Int -> V2 CInt -> [Rectangle CInt]
+turnToGrid (V2 tPR tPC) (V2 width height) =
+  let tilesPerRow = fromIntegral tPR
+      tilesPerColumn = fromIntegral tPC
+      tileWidth  = width  `div` tilesPerRow
+      tileHeight = height `div` tilesPerColumn
+  in [ Rectangle (P (V2 (x*tileWidth) (y*tileHeight))) (V2 tileWidth tileHeight) | y <- [0 .. tilesPerColumn-1], x <- [0..tilesPerRow-1]]
+
+loadAndTileImage :: FilePath -> Renderer -> V2 Int -> IO (Texture, [Rectangle CInt])
+loadAndTileImage fp renderer tilingInfo = do
+  texture <- SDL.Image.loadTexture renderer fp 
+  tInfo <- queryTexture texture
+  let grid = turnToGrid tilingInfo (V2 (textureWidth tInfo) (textureHeight tInfo))
+  -- Debug.trace ("Image layout: " ++ show grid) (return ())
+  return (texture, grid)
+
 main :: IO ()
 main = do
+  cliOptions <- Options.execParser cliOptionsP
   initializeAll
   window <- createWindow "My SDL Application" defaultWindow
   renderer <- createRenderer window (-1) defaultRenderer
-  appLoop renderer initialGameState
+  (image, imageTiles) <- loadAndTileImage (imagePath cliOptions) renderer (V2 2 2)
+  appLoop renderer (mkInitialGameState image imageTiles)
 
 data Motion = Up | Down | Left | Right deriving (Eq, Show)
 

@@ -17,5 +17,8 @@ executable movetiles
     build-depends:   protolude
                    , base
                    , sdl2
+                   , sdl2-image
                    , linear
                    , vector
+                   , optparse-applicative
+                   , containers

@@ -4,7 +4,8 @@ let
 
   inherit (nixpkgs) pkgs;
 
-  f = { mkDerivation, base, linear, protolude, sdl2, stdenv, vector
+  f = { mkDerivation, base, containers, linear
+      , optparse-applicative, protolude, sdl2, sdl2-image, stdenv, vector
       }:
       mkDerivation {
         pname = "movetiles";
@@ -12,7 +13,10 @@ let
         src = ./.;
         isLibrary = false;
         isExecutable = true;
-        executableHaskellDepends = [ base linear protolude sdl2 vector ];
+        executableHaskellDepends = [
+          base containers linear optparse-applicative protolude sdl2
+          sdl2-image vector
+        ];
         homepage = "http://github.com/typetetris/sdl-exploration";
         license = stdenv.lib.licenses.mit;
       };

@@ -15,162 +15,164 @@ import qualified Options.Applicative as Options
 import qualified Data.Map as Map
 import Data.Map (Map(..))
 import qualified SDL.Image
+import Prelude (Show(..))
 
-data CLIOptions = CLIOptions {
-   imagePath :: FilePath
-   } deriving (Show, Eq)
+newtype ColumnCount = Columns Int deriving (Show, Eq)
+newtype RowCount = Rows Int deriving (Show, Eq)
+
+data CLIOptions = CLIOptions { cliOptionsImagePath :: FilePath
+                             , cliOptionsColumns :: ColumnCount
+                             , cliOptionsRows :: RowCount
+                             } deriving (Show, Eq)
 
 cliOptionsParser :: Options.Parser CLIOptions
 cliOptionsParser = CLIOptions <$> Options.strOption ( Options.long "image" <> Options.metavar "IMAGE" <> Options.help "image for the tile puzzle" )
+                              <*>  (Options.option (Columns <$> Options.auto) ( Options.long "columns" <> Options.metavar "NUMCOLUMNS" <> Options.help "number of columns"))
+                              <*>  (Options.option (Rows <$> Options.auto) ( Options.long "rows" <> Options.metavar "NUMROWS" <> Options.help "number of rows"))
 
 cliOptionsP :: Options.ParserInfo CLIOptions
 cliOptionsP =  Options.info (cliOptionsParser <**> Options.helper) (Options.fullDesc <> Options.progDesc "Solve a tile puzzle with an image you love!" <> Options.header "movetiles - Solve a tile puzzle!")
 
-data Kachel = Kachel1 | Kachel2 | Kachel3 deriving (Show, Eq, Ord)
+main :: IO ()
+main = do
+  cliOptions <- Options.execParser cliOptionsP
+  initializeAll
+  window <- createWindow "My SDL Application" defaultWindow
+  renderer <- createRenderer window (-1) defaultRenderer
+  (image, imageDimensions@(ImageDimensions d)) <- loadImage (cliOptionsImagePath cliOptions) renderer
+  rendererLogicalSize renderer $= Just d
+  appLoop renderer (mkInitialGameState (cliOptionsColumns cliOptions) (cliOptionsRows cliOptions) imageDimensions image)
 
-data Board = Board { leftUpper :: Maybe Kachel
-                   , rightUpper :: Maybe Kachel
-                   , leftBottom :: Maybe Kachel
-                   , rightBottom :: Maybe Kachel }
-
-data BoardRectangles = BoardRectangles { leftUpperR :: Rectangle CInt
-                                       , rightUpperR :: Rectangle CInt
-                                       , leftBottomR :: Rectangle CInt
-                                       , rightBottomR :: Rectangle CInt }
+newtype ImageDimensions = ImageDimensions (V2 CInt)
+loadImage :: FilePath -> SDL.Renderer -> IO (SDL.Texture, ImageDimensions)
+loadImage fp renderer = do
+  image <- SDL.Image.loadTexture renderer fp
+  imageInfo <- SDL.queryTexture image
+  return ( image
+         , ImageDimensions (V2 (SDL.textureWidth imageInfo) (SDL.textureHeight imageInfo))
+         )
 
 data GameState = GameState { board :: Board
-                           , boardRectangles :: Maybe BoardRectangles -- to determine which kachel was clicked
-                           , selectedKachel :: Maybe Kachel
-                           , imageTexture :: SDL.Texture
-                           , imageTileMap :: Map Kachel (Rectangle CInt)
-                           }
+                           , selectedKachel :: Maybe ImageTile
+                           , image :: SDL.Texture
+                           , tileWidth :: CInt
+                           , tileHeight :: CInt
+                           , columns :: ColumnCount
+                           , rows :: RowCount
+                           } deriving Show
 
-initialBoard :: Board
-initialBoard = Board (Just Kachel1) (Just Kachel2) (Just Kachel3) Nothing
+instance Show SDL.Texture where
+  show _ = "some texture"
 
-mkInitialGameState :: SDL.Texture -> [Rectangle (CInt)] -> GameState
-mkInitialGameState image imageTiles = GameState {
-    board = Board (Just Kachel1) (Just Kachel2) (Just Kachel3) Nothing
-  , boardRectangles = Nothing
-  , selectedKachel = Nothing
-  , imageTexture = image
-  , imageTileMap = Map.fromList . zip [Kachel1,Kachel2,Kachel3] $ imageTiles
-  }
+newtype Board = Board { positions :: Map GridPosition (Maybe ImageTile) } deriving Show
 
-newtype Width = Width CInt deriving (Show)
-newtype Height = Height CInt deriving (Show)
+-- A grid position determines a cell in a grid
+-- +---------+---------+
+-- |         |         |
+-- |  (0,0)  |  (1,0)  |
+-- |         |         |
+-- +---------+---------+
+-- |         |         |
+-- |  (0,1)  |  (1,1)  |
+-- |         |         |
+-- +---------+---------+
+data GridPosition = GridPosition Int Int deriving (Show, Eq, Ord)
+data ImageTile = ImageTile (Rectangle CInt) deriving (Eq, Show)
 
-splitInRectangles :: Rectangle CInt -> BoardRectangles
--- splitInRectangles w h | Debug.trace ("splitInRectangles " ++ show w ++ " " ++ show h) False = undefined
-splitInRectangles (Rectangle (P (V2 offx offy)) (V2 width height)) =
-  let firstWidth = width `div` 2
-      restWidth = width - firstWidth
-      firstHeight = height `div` 2
-      restHeight = height - firstHeight
-      zero = (0::CInt)
-  in BoardRectangles (Rectangle (P (V2 offx offy))                                (V2 firstWidth firstHeight))
-                     (Rectangle (P (V2 (offx + firstWidth) offy))                 (V2 restWidth firstHeight))
-                     (Rectangle (P (V2 offx (offy + firstHeight)))                (V2 firstWidth restHeight))
-                     (Rectangle (P (V2 (offx + firstWidth) (offy + firstHeight))) (V2 restWidth restHeight))
+mkInitialGameState :: ColumnCount -> RowCount -> ImageDimensions -> SDL.Texture -> GameState
+mkInitialGameState c@(Columns columns) r@(Rows rows) (ImageDimensions (V2 width height)) image =
+  let tw = width `div` fromIntegral columns
+      th = height `div` fromIntegral rows
+  in GameState { board = Board $ Map.fromList $ [(GridPosition x y, Just $ ImageTile (Rectangle (P (V2 (fromIntegral x*tw) (fromIntegral y*th))) (V2 tw th))) | x <- [0..columns-1], y <- [0..rows-1], (x /= columns - 1) || (y /= rows - 1)]
+                                                ++ [(GridPosition (columns-1) (rows-1),Nothing)]
+               , selectedKachel = Nothing
+               , image = image
+               , tileWidth = tw
+               , tileHeight = th
+               , columns = c
+               , rows = r
+               }
 
-colorForKachel :: Kachel -> V4 Word8
-colorForKachel Kachel1 = V4 0 255 0   255 
-colorForKachel Kachel2 = V4 0 0   255 255
-colorForKachel Kachel3 = V4 0 255 255 255 
+calculateTargetPos :: GridPosition -> Motion -> GridPosition
+calculateTargetPos (GridPosition x y) Main.Up    = GridPosition x     (y-1)
+calculateTargetPos (GridPosition x y) Main.Down  = GridPosition x     (y+1)
+calculateTargetPos (GridPosition x y) Main.Left  = GridPosition (x-1) y
+calculateTargetPos (GridPosition x y) Main.Right = GridPosition (x+1) y
 
-getRendererDimensions :: Renderer -> IO (Rectangle CInt)
-getRendererDimensions renderer = do
-   (Just r) <- SDL.get (rendererViewport renderer)
-   return r
+moveTileIfPossible :: Board -> Maybe GridPosition -> Motion -> Board
+moveTileIfPossible b Nothing _ = b
+moveTileIfPossible b@(Board positions) (Just from) direction
+  | target <- calculateTargetPos from direction,
+              target `Map.member` positions,
+              from `Map.member` positions,
+              positions Map.! target == Nothing = b{ positions = Map.union (Map.fromList [(target, positions Map.! from), (from, Nothing)]) positions }
+  | otherwise = b
 
-point32toC :: Point V2 Int32 -> Point V2 CInt
-point32toC = fmap CInt
+appLoop :: Renderer -> GameState -> IO ()
+appLoop renderer gamestate@(GameState _ _ _ tileWidth tileHeight _ _) = do
+  event <- waitEvent
+  let eventIsQPress event =
+        case eventPayload event of
+          KeyboardEvent keyboardEvent ->
+            keyboardEventKeyMotion keyboardEvent == Pressed &&
+            keysymKeycode (keyboardEventKeysym keyboardEvent) == KeycodeQ
+          _ -> False
+      qPressed = eventIsQPress event
+  let newGameState = case eventPayload event of
+           MouseButtonEvent (MouseButtonEventData _ Pressed _ ButtonLeft _ (P (V2 x y))) ->
+               gridPositionSelected
+                 gamestate 
+                 (GridPosition (fromIntegral x `div` fromIntegral tileWidth) (fromIntegral y `div` fromIntegral tileHeight))
+           KeyboardEvent (KeyboardEventData _ Pressed _ (Keysym _ code _)) ->
+             motionPressed gamestate
+               (case code of
+                 KeycodeUp    -> Just Main.Up
+                 KeycodeDown  -> Just Main.Down
+                 KeycodeLeft  -> Just Main.Left
+                 KeycodeRight -> Just Main.Right
+                 _ -> Nothing)
+           _ -> gamestate
+  drawGameState renderer newGameState
+  present renderer
+  if not qPressed then (appLoop renderer newGameState) else SDL.quit
 
-pointInRectangle :: Rectangle CInt -> Point V2 CInt -> Bool
-pointInRectangle (Rectangle (P (V2 x y)) (V2 w h)) (P (V2 kx ky)) =
-  let relx = kx - x
-      rely = ky - y
-  in    0    <= relx
-     && relx <= w
-     && 0    <= rely
-     && rely <= h
+gridPositionSelected :: GameState -> GridPosition -> GameState
+-- gridPositionSelected gs pos | Debug.trace ("gridPositionSelected " ++ Prelude.show gs ++ " " ++ Prelude.show pos) False = undefined 
+gridPositionSelected gs@(GameState (Board positions) selected _ _ _ _ _) pos = 
+  case positions Map.! pos of
+    Nothing     -> gs
+    (Just tile) -> gs { selectedKachel = case selected of
+                                          (Just oldSelection) | tile == oldSelection -> Nothing
+                                          _ -> Just tile
+                      }
 
-executeMotion :: Board -> Maybe Motion -> Maybe Kachel -> Board
-executeMotion b (Just m) (Just k) = case () of
-  _ | leftUpper b == (Just k) -> case m of
-       Main.Up    -> b
-       Main.Left  -> b
-       Main.Down  -> if leftBottom b == Nothing then b { leftUpper = Nothing, leftBottom = (Just k) } else b
-       Main.Right -> if rightUpper b == Nothing then b { leftUpper = Nothing, rightUpper = (Just k) } else b
-  _ | leftBottom b == (Just k) -> case m of
-       Main.Up    -> if leftUpper b == Nothing then b { leftBottom = Nothing, leftUpper = (Just k) } else b
-       Main.Left  -> b
-       Main.Down  -> b
-       Main.Right -> if rightBottom b == Nothing then b { leftBottom = Nothing, rightBottom = (Just k) } else b
-  _ | rightUpper b == (Just k) -> case m of
-       Main.Up    -> b
-       Main.Left  -> if leftUpper b == Nothing then b { rightUpper = Nothing, leftUpper = (Just k) } else b
-       Main.Down  -> if rightBottom b == Nothing then b { rightUpper = Nothing, rightBottom = (Just k) } else b
-       Main.Right -> b
-  _ | rightBottom b == (Just k) -> case m of
-       Main.Up    -> if rightUpper b == Nothing then b { rightBottom = Nothing, rightUpper = (Just k) } else b
-       Main.Left  -> if leftBottom b == Nothing then b { rightBottom = Nothing, leftBottom = (Just k) } else b
-       Main.Down  -> b
-       Main.Right -> b
-  _ -> b
-executeMotion b _ _ = b
-
-calculateNextGameState :: GameState -> Rectangle CInt -> Maybe (Point V2 Int32) -> Maybe Motion -> GameState
-calculateNextGameState gs@(GameState board _ selected _ _) r buttonPress motion =
-  let actRects     = splitInRectangles r
-      newSelection = case buttonPress of
-        Nothing    -> selected
-        (Just pos) ->
-          let cpos = point32toC pos
-              clickedKachel = case () of
-                _ | pointInRectangle (leftUpperR actRects) cpos -> leftUpper board
-                _ | pointInRectangle (leftBottomR actRects) cpos -> leftBottom board
-                _ | pointInRectangle (rightBottomR actRects) cpos -> rightBottom board
-                _ | pointInRectangle (rightUpperR actRects) cpos -> rightUpper board
-                _ -> Nothing
-          in case clickedKachel of
-            Nothing -> selected
-            _ | clickedKachel == selected -> Nothing
-            _ -> clickedKachel
-  in gs { board = executeMotion board motion newSelection, boardRectangles = Just actRects, selectedKachel = newSelection }
-
-getRectangleForSelectedKachel :: GameState -> Maybe (Rectangle CInt)
-getRectangleForSelectedKachel (GameState _ _ Nothing _ _) = Nothing
-getRectangleForSelectedKachel (GameState _ Nothing _ _ _) = Nothing
-getRectangleForSelectedKachel (GameState b (Just rs) k _ _) = case () of
-  _ | leftUpper b == k   -> Just $ leftUpperR rs
-  _ | leftBottom b == k  -> Just $ leftBottomR rs
-  _ | rightBottom b == k -> Just $ rightBottomR rs
-  _ | rightUpper b == k  -> Just $ rightUpperR rs
-  _ -> Nothing
+motionPressed :: GameState -> Maybe Motion -> GameState
+motionPressed gs Nothing = gs
+motionPressed gs@(GameState _ Nothing     _ _ _ _ _) _ = gs
+motionPressed gs@(GameState b@(Board positions) (Just tile) _ _ _ _ _) (Just motion) =
+  let pos = Map.foldlWithKey'
+                 (\a k b -> if a == Nothing then (if b == (Just tile) then Just k else Nothing) else a) 
+                 Nothing
+                 positions
+  in gs { board = moveTileIfPossible b pos motion }
 
 drawGameState :: Renderer -> GameState -> IO ()
-drawGameState _ (GameState _ Nothing _ _ _) = return () -- without Rectangles, we can't draw anything.
-drawGameState renderer gs@(GameState board (Just boardRectangles) selectedKachel image imageTiles) = do
-    drawBoard renderer board boardRectangles image imageTiles
-    case getRectangleForSelectedKachel gs of
-      Nothing  -> return ()
-      (Just r) -> drawSelectionFrame renderer r
-
-drawBoard :: Renderer -> Board -> BoardRectangles -> SDL.Texture -> Map Kachel (Rectangle CInt) -> IO ()
-drawBoard renderer board rectAngles image imageTiles = do
+drawGameState renderer gs@(GameState _ _ _ _ _ (Columns cols) (Rows rows)) = do
   rendererDrawColor renderer $= V4 100 100 100 255
   clear renderer
-  drawKachel renderer (leftUpper   board) (leftUpperR   rectAngles) image imageTiles
-  drawKachel renderer (rightUpper  board) (rightUpperR  rectAngles) image imageTiles
-  drawKachel renderer (leftBottom  board) (leftBottomR  rectAngles) image imageTiles
-  drawKachel renderer (rightBottom board) (rightBottomR rectAngles) image imageTiles
+  sequence_ [ drawGridPosition renderer gs (GridPosition x y) | y <- [0..rows-1], x <- [0..cols-1] ]
 
-drawKachel :: Renderer -> Maybe Kachel -> Rectangle CInt -> SDL.Texture -> Map Kachel (Rectangle CInt) -> IO ()
--- drawKachel _ mk r | Debug.trace ("drawKachel " ++ show mk ++ " " ++ show r) False = undefined
-drawKachel _ Nothing _ _ _ = return ()
-drawKachel renderer (Just kachel) r image imageTiles = do
-    copy renderer image (Just $ imageTiles Map.! kachel) (Just r)
+drawGridPosition :: SDL.Renderer -> GameState -> GridPosition -> IO ()
+-- drawGridPosition _ gs pos | Debug.trace ("drawGridPosition " ++ Prelude.show gs ++ " " ++ Prelude.show pos) False = undefined 
+drawGridPosition renderer gs@(GameState (Board positions) selectedKachel image tw th _ _) pos@(GridPosition x y) = do
+  case positions Map.! pos of
+    Nothing     -> return ()
+    (Just (ImageTile r)) -> do
+      let destRect = Rectangle (P (V2 (fromIntegral x*tw) (fromIntegral y*th))) (V2 tw th)
+      copy renderer image (Just r) (Just destRect) 
+      case selectedKachel of
+        (Just (ImageTile s)) | s == r -> drawSelectionFrame renderer destRect
+        _ -> return ()
 
 calculateSelectionRects :: Rectangle CInt -> [Rectangle CInt]
 calculateSelectionRects (Rectangle (P (V2 offx offy)) (V2 width height)) =
@@ -187,57 +189,4 @@ drawSelectionFrame renderer r = do
     rendererDrawColor renderer $= V4 255 0 0 255
     fillRects renderer (Vector.Storable.fromList (calculateSelectionRects r))
 
-turnToGrid :: V2 Int -> V2 CInt -> [Rectangle CInt]
-turnToGrid (V2 tPR tPC) (V2 width height) =
-  let tilesPerRow = fromIntegral tPR
-      tilesPerColumn = fromIntegral tPC
-      tileWidth  = width  `div` tilesPerRow
-      tileHeight = height `div` tilesPerColumn
-  in [ Rectangle (P (V2 (x*tileWidth) (y*tileHeight))) (V2 tileWidth tileHeight) | y <- [0 .. tilesPerColumn-1], x <- [0..tilesPerRow-1]]
-
-loadAndTileImage :: FilePath -> Renderer -> V2 Int -> IO (Texture, [Rectangle CInt])
-loadAndTileImage fp renderer tilingInfo = do
-  texture <- SDL.Image.loadTexture renderer fp 
-  tInfo <- queryTexture texture
-  let grid = turnToGrid tilingInfo (V2 (textureWidth tInfo) (textureHeight tInfo))
-  -- Debug.trace ("Image layout: " ++ show grid) (return ())
-  return (texture, grid)
-
-main :: IO ()
-main = do
-  cliOptions <- Options.execParser cliOptionsP
-  initializeAll
-  window <- createWindow "My SDL Application" defaultWindow
-  renderer <- createRenderer window (-1) defaultRenderer
-  (image, imageTiles) <- loadAndTileImage (imagePath cliOptions) renderer (V2 2 2)
-  appLoop renderer (mkInitialGameState image imageTiles)
-
 data Motion = Up | Down | Left | Right deriving (Eq, Show)
-
-appLoop :: Renderer -> GameState -> IO ()
-appLoop renderer gamestate = do
-  event <- waitEvent
-  let eventIsQPress event =
-        case eventPayload event of
-          KeyboardEvent keyboardEvent ->
-            keyboardEventKeyMotion keyboardEvent == Pressed &&
-            keysymKeycode (keyboardEventKeysym keyboardEvent) == KeycodeQ
-          _ -> False
-      qPressed = eventIsQPress event
-  let buttonPressPos = case eventPayload event of
-          MouseButtonEvent (MouseButtonEventData _ Pressed _ ButtonLeft _ pos) -> Just pos
-          _ -> Nothing
-  let motion = case eventPayload event of
-                 KeyboardEvent (KeyboardEventData _ Pressed _ (Keysym _ code _)) ->
-                   case code of
-                     KeycodeUp    -> Just Main.Up
-                     KeycodeDown  -> Just Main.Down
-                     KeycodeLeft  -> Just Main.Left
-                     KeycodeRight -> Just Main.Right
-                     _ -> Nothing
-                 _ -> Nothing
-  viewPort <- getRendererDimensions renderer
-  let newGameState = calculateNextGameState gamestate viewPort buttonPressPos motion
-  drawGameState renderer newGameState
-  present renderer
-  if not qPressed then (appLoop renderer newGameState) else SDL.quit

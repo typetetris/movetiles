@@ -1,11 +1,11 @@
-{ nixpkgs ? import <nixpkgs> {}, compiler ? "default", doBenchmark ? false }:
+{ nixpkgs ? import <nixos-unstable> {}, compiler ? "default", doBenchmark ? false }:
 
 let
 
   inherit (nixpkgs) pkgs;
 
   f = { mkDerivation, base, containers, linear
-      , optparse-applicative, protolude, sdl2, sdl2-image, stdenv, vector
+      , optparse-applicative, protolude, sdl2, sdl2-image, stdenv, vector, gi-gtk, haskell-gi-base, text, gtk3, wrapGAppsHook, gnome3
       }:
       mkDerivation {
         pname = "movetiles";
@@ -13,9 +13,10 @@ let
         src = ./.;
         isLibrary = false;
         isExecutable = true;
+        executableSystemDepends = [ gtk3 wrapGAppsHook gnome3.defaultIconTheme gnome3.dconf ];
         executableHaskellDepends = [
           base containers linear optparse-applicative protolude sdl2
-          sdl2-image vector
+          sdl2-image vector gi-gtk haskell-gi-base text
         ];
         homepage = "http://github.com/typetetris/sdl-exploration";
         license = stdenv.lib.licenses.mit;

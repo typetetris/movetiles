@@ -16,6 +16,7 @@ import qualified Data.Map as Map
 import Data.Map (Map(..))
 import qualified SDL.Image
 import Prelude (Show(..))
+import qualified Dialog as Dialog
 
 newtype ColumnCount = Columns Int deriving (Show, Eq)
 newtype RowCount = Rows Int deriving (Show, Eq)
@@ -35,7 +36,16 @@ cliOptionsP =  Options.info (cliOptionsParser <**> Options.helper) (Options.full
 
 main :: IO ()
 main = do
-  cliOptions <- Options.execParser cliOptionsP
+  args <- getArgs
+  cliOptions <- do
+     if null args
+       then do
+         Dialog.init
+         (fn, r, c) <- Dialog.run
+         case fn of
+           Nothing -> putText "You need to select an image!" >> exitFailure
+           (Just f) -> return $ CLIOptions f (Columns c) (Rows r)
+       else Options.execParser cliOptionsP
   initializeAll
   window <- createWindow "My SDL Application" defaultWindow
   renderer <- createRenderer window (-1) defaultRenderer
@@ -123,14 +133,18 @@ appLoop renderer gamestate@(GameState _ _ _ tileWidth tileHeight _ _) = do
                gridPositionSelected
                  gamestate 
                  (GridPosition (fromIntegral x `div` fromIntegral tileWidth) (fromIntegral y `div` fromIntegral tileHeight))
-           KeyboardEvent (KeyboardEventData _ Pressed _ (Keysym _ code _)) ->
-             motionPressed gamestate
-               (case code of
-                 KeycodeUp    -> Just Main.Up
-                 KeycodeDown  -> Just Main.Down
-                 KeycodeLeft  -> Just Main.Left
-                 KeycodeRight -> Just Main.Right
-                 _ -> Nothing)
+           KeyboardEvent (KeyboardEventData _ Pressed _ (Keysym _ code mods)) ->
+             let motion = (case code of
+                       KeycodeUp    -> Just Main.Up
+                       KeycodeDown  -> Just Main.Down
+                       KeycodeLeft  -> Just Main.Left
+                       KeycodeRight -> Just Main.Right
+                       _ -> Nothing)
+                 shiftPressed = (case mods of
+                       KeyModifier{keyModifierLeftShift=True} -> True
+                       KeyModifier{keyModifierRightShift=True} -> True
+                       _ -> False)
+             in (if shiftPressed then selectionMotionPressed else motionPressed) gamestate motion
            _ -> gamestate
   drawGameState renderer newGameState
   present renderer
@@ -145,6 +159,23 @@ gridPositionSelected gs@(GameState (Board positions) selected _ _ _ _ _) pos =
                                           (Just oldSelection) | tile == oldSelection -> Nothing
                                           _ -> Just tile
                       }
+
+selectionMotionPressed :: GameState -> Maybe Motion -> GameState
+selectionMotionPressed gs Nothing = gs
+selectionMotionPressed gs@(GameState _ Nothing     _ _ _ _ _) _ = gs
+selectionMotionPressed gs@(GameState b@(Board positions) (Just tile) _ _ _ _ _) (Just motion) =
+  let pos = Map.foldlWithKey'
+                 (\a k b -> if a == Nothing then (if b == (Just tile) then Just k else Nothing) else a) 
+                 Nothing
+                 positions
+  in case pos of
+        Nothing -> gs
+        (Just realPos) -> let tp = (calculateTargetPos realPos motion) in case positions Map.!? tp of
+                              (Just (Just tile)) -> gs{ selectedKachel = (Just tile) }
+                              (Just Nothing) -> let tp2 = (calculateTargetPos tp motion) in case positions Map.!? tp2 of
+                                                   (Just (Just tile)) -> gs { selectedKachel = (Just tile) }
+                                                   _ -> gs
+                              _ -> gs
 
 motionPressed :: GameState -> Maybe Motion -> GameState
 motionPressed gs Nothing = gs
@@ -174,19 +205,10 @@ drawGridPosition renderer gs@(GameState (Board positions) selectedKachel image t
         (Just (ImageTile s)) | s == r -> drawSelectionFrame renderer destRect
         _ -> return ()
 
-calculateSelectionRects :: Rectangle CInt -> [Rectangle CInt]
-calculateSelectionRects (Rectangle (P (V2 offx offy)) (V2 width height)) =
-  let p5 x = (x * 5) `div` 100 -- get 5 per cent
-      thickness = min (p5 width) (p5 height)
-  in [(Rectangle (P (V2 offx offy))                        (V2 width     thickness))
-     ,(Rectangle (P (V2 offx (offy + height - thickness))) (V2 width     thickness))
-     ,(Rectangle (P (V2 offx offy))                        (V2 thickness height))
-     ,(Rectangle (P (V2 (offx + width - thickness) offy))  (V2 thickness height))
-     ]
-
 drawSelectionFrame :: Renderer -> Rectangle CInt -> IO ()
 drawSelectionFrame renderer r = do
-    rendererDrawColor renderer $= V4 255 0 0 255
-    fillRects renderer (Vector.Storable.fromList (calculateSelectionRects r))
+    rendererDrawBlendMode renderer $= BlendAlphaBlend
+    rendererDrawColor renderer $= V4 255 0 0 100 
+    fillRect renderer (Just r)
 
 data Motion = Up | Down | Left | Right deriving (Eq, Show)

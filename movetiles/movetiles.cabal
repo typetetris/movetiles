@@ -22,3 +22,7 @@ executable movetiles
                    , vector
                    , optparse-applicative
                    , containers
+                   , text
+                   , gi-gtk
+                   , haskell-gi-base
+    other-modules: Dialog

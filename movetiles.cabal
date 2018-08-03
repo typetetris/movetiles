@@ -1,6 +1,6 @@
 name:          movetiles
 version:       0.0.1.0
-homepage:      http://github.com/typetetris/sdl-exploration
+homepage:      http://github.com/typetetris/movetiles
 license:       MIT
 license-file:  LICENSE
 author:        Eric Wolf
@@ -25,4 +25,6 @@ executable movetiles
                    , text
                    , gi-gtk
                    , haskell-gi-base
-    other-modules: Dialog
+                   , random
+    other-modules:   Dialog
+                   , Game

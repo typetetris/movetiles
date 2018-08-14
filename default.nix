@@ -1,4 +1,4 @@
-{ nixpkgs ? import <nixos-unstable> {}, compiler ? "default", doBenchmark ? false }:
+{ nixpkgs ? import (fetchTarball https://github.com/NixOS/nixpkgs/archive/3878342ef02ded79a81d8d03092386804531992f.tar.gz) {}, compiler ? "default", doBenchmark ? false, sdl2check ? false }:
 
 let
 
@@ -17,9 +17,17 @@ let
         hydraPlatforms = stdenv.lib.platforms.none;
       };
 
-  haskellPackages = if compiler == "default"
-                       then pkgs.haskellPackages
-                       else pkgs.haskell.packages.${compiler};
+  haskellPackages1 = if compiler == "default"
+                        then pkgs.haskellPackages
+                        else pkgs.haskell.packages.${compiler};
+  haskellPackages = if sdl2check
+                       then haskellPackages1
+                       else with pkgs.haskell.lib; haskellPackages1.override {
+                         overrides = self: super: {
+                           sdl2 = dontCheck super.sdl2;
+                           sdl2-image = dontCheck super.sdl2-image;
+                         };
+                       };
 
   variant = if doBenchmark then pkgs.haskell.lib.doBenchmark else pkgs.lib.id;
 
